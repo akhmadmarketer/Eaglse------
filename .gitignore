@@ -1,0 +1,15 @@
+# Секреты
+.env
+.env.local
+.env.*.local
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Локальные файлы
+*.log
+.DS_Store
+
