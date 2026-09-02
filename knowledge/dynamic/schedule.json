@@ -1,0 +1,18 @@
+{
+  "source": "https://academy-eagles.ru/",
+  "scraped_on": "2026-09-02",
+  "status": "conflict",
+  "published_variants": [
+    {
+      "location": "контактный блок главной страницы",
+      "regular": "07:00–23:00",
+      "weekends_and_holidays": "10:00–23:00"
+    },
+    {
+      "location": "подвал сайта",
+      "regular": "08:00–22:00",
+      "weekends_and_holidays": null
+    }
+  ],
+  "bot_behavior": "Не называть часы работы точными до подтверждения владельцем; предложить уточнение у сотрудника."
+}

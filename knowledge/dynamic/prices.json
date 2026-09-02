@@ -1,0 +1,49 @@
+{
+  "source": "https://academy-eagles.ru/catalog/",
+  "scraped_on": "2026-09-02",
+  "currency": "RUB",
+  "policy": "Это снимок цен сайта. Перед продажей или оплатой цену нужно перепроверить.",
+  "items": [
+    {
+      "name": "BJJ для взрослых Premium",
+      "current_price": 4000,
+      "regular_price": 4500,
+      "sale_price": 4000,
+      "duration_days": 30,
+      "training_days": ["пн", "вт", "ср", "чт", "пт", "сб"],
+      "training_time": "18:30–20:00",
+      "visits": null,
+      "status": "needs_confirmation",
+      "note": "В кратком описании указано 15 посещений, в полном — 30.",
+      "url": "https://academy-eagles.ru/product/bjj-взрослые-premium/"
+    },
+    {
+      "name": "MMA",
+      "current_price": 6000,
+      "status": "incomplete",
+      "note": "На карточке указаны тренер Шамиль Ястреб и группа для подростков-мужчин; срок и число посещений не указаны.",
+      "url": "https://academy-eagles.ru/product/мма/"
+    },
+    {
+      "name": "Детский BJJ",
+      "current_price": 5000,
+      "status": "incomplete",
+      "note": "Срок, число посещений, возраст и расписание не указаны.",
+      "url": "https://academy-eagles.ru/product/дети-bjj/"
+    },
+    {
+      "name": "Тренажёрный зал",
+      "current_price": 3000,
+      "status": "incomplete",
+      "note": "Срок и условия абонемента не указаны.",
+      "url": "https://academy-eagles.ru/product/тренажерный-зал/"
+    },
+    {
+      "name": "Персональная тренировка",
+      "current_price": 5000,
+      "status": "incomplete",
+      "note": "Продолжительность занятия и выбранный тренер не указаны.",
+      "url": "https://academy-eagles.ru/product/персональная-тренировка/"
+    }
+  ]
+}
