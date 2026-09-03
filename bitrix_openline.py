@@ -72,7 +72,7 @@ def connect_bot(config_id: int) -> None:
                 "WELCOME_BOT_ENABLE": "Y",
                 "WELCOME_BOT_JOIN": "always",
                 "WELCOME_BOT_ID": int(bot_id),
-                "WELCOME_BOT_TIME": 3600,
+                "WELCOME_BOT_TIME": 7 * 24 * 60 * 60,
                 "WELCOME_BOT_LEFT": "close",
             },
         },
