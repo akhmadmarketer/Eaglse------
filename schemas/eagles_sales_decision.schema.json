@@ -1,0 +1,592 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "decision_version": {
+      "type": "string",
+      "enum": [
+        "1.0"
+      ]
+    },
+    "action": {
+      "type": "string",
+      "enum": [
+        "reply_and_continue",
+        "reply_and_handoff",
+        "reply_and_defer",
+        "close_conversation",
+        "no_reply"
+      ]
+    },
+    "reply": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "should_send": {
+          "type": "boolean"
+        },
+        "text": {
+          "type": "string"
+        },
+        "purpose": {
+          "type": "string",
+          "enum": [
+            "answer_and_continue",
+            "answer_and_handoff",
+            "confirm_deferment",
+            "close_politely",
+            "none"
+          ]
+        },
+        "asks_question": {
+          "type": "boolean"
+        },
+        "question_topic": {
+          "type": "string",
+          "enum": [
+            "none",
+            "service_for",
+            "age",
+            "experience",
+            "goal",
+            "service_preference",
+            "time_preference",
+            "barrier",
+            "contact",
+            "team_dates",
+            "team_size",
+            "team_discipline",
+            "team_services",
+            "confirm_conflict",
+            "other"
+          ]
+        }
+      },
+      "required": [
+        "should_send",
+        "text",
+        "purpose",
+        "asks_question",
+        "question_topic"
+      ]
+    },
+    "crm_analysis": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "request_type": {
+          "type": "string",
+          "enum": [
+            "new_sale",
+            "upsell",
+            "current_client_service",
+            "complaint_or_problem",
+            "business_or_partnership",
+            "non_target",
+            "unknown"
+          ]
+        },
+        "sales_type": {
+          "type": "string",
+          "enum": [
+            "individual",
+            "child",
+            "athlete_preparation",
+            "team_or_complex",
+            "existing_client_upsell",
+            "unknown"
+          ]
+        },
+        "service_for": {
+          "type": "string",
+          "enum": [
+            "self",
+            "child",
+            "other_person",
+            "team_or_group",
+            "unknown"
+          ]
+        },
+        "primary_service": {
+          "type": "string",
+          "enum": [
+            "bjj",
+            "grappling",
+            "freestyle_wrestling",
+            "mma",
+            "boxing",
+            "kickboxing",
+            "muay_thai",
+            "wushu_sanda",
+            "women_bjj",
+            "children_unspecified",
+            "personal_training",
+            "functional_training",
+            "gym",
+            "recovery_zone",
+            "sports_camp",
+            "hostel",
+            "catering",
+            "event_or_rental",
+            "complex_package",
+            "other_confirmed",
+            "unknown"
+          ]
+        },
+        "additional_services": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "bjj",
+              "grappling",
+              "freestyle_wrestling",
+              "mma",
+              "boxing",
+              "kickboxing",
+              "muay_thai",
+              "wushu_sanda",
+              "women_bjj",
+              "children_unspecified",
+              "personal_training",
+              "functional_training",
+              "gym",
+              "recovery_zone",
+              "sports_camp",
+              "hostel",
+              "catering",
+              "event_or_rental",
+              "complex_package",
+              "other_confirmed"
+            ]
+          }
+        },
+        "preferred_format": {
+          "type": "string",
+          "enum": [
+            "group",
+            "personal",
+            "independent",
+            "team",
+            "complex",
+            "choosing",
+            "unknown",
+            "not_applicable"
+          ]
+        },
+        "age_group": {
+          "type": "string",
+          "enum": [
+            "child_6_12",
+            "teen_13_17",
+            "young_adult_18_24",
+            "adult",
+            "mixed_team",
+            "unknown",
+            "not_applicable"
+          ]
+        },
+        "participant_age": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "experience_level": {
+          "type": "string",
+          "enum": [
+            "never_trained",
+            "beginner",
+            "returning",
+            "regular",
+            "experienced_athlete",
+            "competition_athlete",
+            "mixed_team",
+            "unknown",
+            "not_applicable"
+          ]
+        },
+        "primary_job": {
+          "type": "string",
+          "enum": [
+            "start_sport",
+            "improve_fitness",
+            "learn_martial_art",
+            "gain_confidence",
+            "child_discipline_and_development",
+            "channel_teen_energy",
+            "find_sport_community",
+            "improve_technical_level",
+            "prepare_for_competition",
+            "return_after_break",
+            "use_gym",
+            "choose_personal_format",
+            "recover_after_training",
+            "organize_camp",
+            "organize_accommodation",
+            "organize_event",
+            "other",
+            "unknown"
+          ]
+        },
+        "client_goal_text": {
+          "type": "string"
+        },
+        "time_preference": {
+          "type": "string"
+        },
+        "client_state": {
+          "type": "string",
+          "enum": [
+            "unknown_intent",
+            "cold_interest",
+            "aware_interest",
+            "warm",
+            "ready_for_handoff",
+            "deferred",
+            "refused",
+            "human_required",
+            "non_target"
+          ]
+        },
+        "state_reason": {
+          "type": "string"
+        },
+        "main_barrier": {
+          "type": "string",
+          "enum": [
+            "none",
+            "choice_uncertainty",
+            "price",
+            "schedule",
+            "injury_or_load_fear",
+            "age_or_low_fitness",
+            "academy_distrust",
+            "trainer_doubt",
+            "atmosphere_or_judgment_fear",
+            "competitor_comparison",
+            "needs_other_person_decision",
+            "not_ready_now",
+            "unconfirmed_conditions",
+            "nonstandard_request",
+            "health_requires_human",
+            "other",
+            "unknown"
+          ]
+        },
+        "barrier_text": {
+          "type": "string"
+        },
+        "barrier_status": {
+          "type": "string",
+          "enum": [
+            "absent",
+            "detected",
+            "clarifying",
+            "answered",
+            "resolved",
+            "unresolved",
+            "requires_human"
+          ]
+        },
+        "qualification_status": {
+          "type": "string",
+          "enum": [
+            "not_started",
+            "partial",
+            "enough_for_ai",
+            "enough_for_handoff",
+            "handoff_incomplete",
+            "not_applicable"
+          ]
+        },
+        "missing_data": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "next_action": {
+          "type": "string",
+          "enum": [
+            "answer_question",
+            "clarify_goal",
+            "help_choose_service",
+            "clarify_barrier",
+            "provide_verified_evidence",
+            "check_barrier_resolution",
+            "request_staff_confirmation",
+            "handoff_to_manager",
+            "manager_contact_client",
+            "wait_until_agreed_date",
+            "suggest_close",
+            "none",
+            "unknown"
+          ]
+        }
+      },
+      "required": [
+        "request_type",
+        "sales_type",
+        "service_for",
+        "primary_service",
+        "additional_services",
+        "preferred_format",
+        "age_group",
+        "participant_age",
+        "experience_level",
+        "primary_job",
+        "client_goal_text",
+        "time_preference",
+        "client_state",
+        "state_reason",
+        "main_barrier",
+        "barrier_text",
+        "barrier_status",
+        "qualification_status",
+        "missing_data",
+        "next_action"
+      ]
+    },
+    "extracted_facts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "field": {
+            "type": "string",
+            "enum": [
+              "request_type",
+              "sales_type",
+              "service_for",
+              "primary_service",
+              "additional_services",
+              "preferred_format",
+              "age_group",
+              "participant_age",
+              "experience_level",
+              "primary_job",
+              "client_goal_text",
+              "time_preference",
+              "client_state",
+              "state_reason",
+              "main_barrier",
+              "barrier_text",
+              "barrier_status",
+              "qualification_status",
+              "missing_data",
+              "next_action",
+              "handoff_reason",
+              "manager_summary",
+              "followup_permission",
+              "next_contact_at",
+              "contact_name",
+              "contact_phone",
+              "contact_email",
+              "preferred_contact_method",
+              "team_name",
+              "team_discipline",
+              "team_start_date",
+              "team_end_date",
+              "athlete_count",
+              "companion_count",
+              "team_age_composition",
+              "team_required_services",
+              "accommodation_requirements",
+              "catering_requirements",
+              "other_conditions"
+            ]
+          },
+          "operation": {
+            "type": "string",
+            "enum": [
+              "set",
+              "add"
+            ]
+          },
+          "value_type": {
+            "type": "string",
+            "enum": [
+              "string",
+              "integer",
+              "date",
+              "datetime",
+              "enum",
+              "enum_list"
+            ]
+          },
+          "value_text": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "client_explicit",
+              "model_inference",
+              "system_context"
+            ]
+          },
+          "evidence": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field",
+          "operation",
+          "value_type",
+          "value_text",
+          "source",
+          "evidence"
+        ]
+      }
+    },
+    "stage_transition": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requested": {
+          "type": "boolean"
+        },
+        "target": {
+          "type": "string",
+          "enum": [
+            "none",
+            "ai_consultation",
+            "deferred_interest",
+            "manager_required"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "requested",
+        "target",
+        "reason",
+        "evidence"
+      ]
+    },
+    "handoff": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "required": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "none",
+            "client_ready",
+            "client_requested_human",
+            "needs_current_confirmation",
+            "financial_or_contract",
+            "trainer_question",
+            "health_or_injury",
+            "complaint_or_conflict",
+            "individual_program",
+            "team_or_complex_quote",
+            "nonstandard_conditions",
+            "other"
+          ]
+        },
+        "summary": {
+          "type": "string"
+        },
+        "manager_task": {
+          "type": "string"
+        },
+        "missing_data": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "required",
+        "reason",
+        "summary",
+        "manager_task",
+        "missing_data"
+      ]
+    },
+    "conflicts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "field": {
+            "type": "string"
+          },
+          "crm_value": {
+            "type": "string"
+          },
+          "new_value": {
+            "type": "string"
+          },
+          "explanation": {
+            "type": "string"
+          },
+          "needs_confirmation": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "crm_value",
+          "new_value",
+          "explanation",
+          "needs_confirmation"
+        ]
+      }
+    },
+    "safety": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requires_human": {
+          "type": "boolean"
+        },
+        "category": {
+          "type": "string",
+          "enum": [
+            "none",
+            "health_or_injury",
+            "complaint",
+            "financial_or_contract",
+            "technical_training_question",
+            "individual_program",
+            "sensitive_personal_issue",
+            "other"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "requires_human",
+        "category",
+        "reason"
+      ]
+    }
+  },
+  "required": [
+    "decision_version",
+    "action",
+    "reply",
+    "crm_analysis",
+    "extracted_facts",
+    "stage_transition",
+    "handoff",
+    "conflicts",
+    "safety"
+  ]
+}

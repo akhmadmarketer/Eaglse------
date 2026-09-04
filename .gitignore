@@ -12,4 +12,6 @@ venv/
 # Локальные файлы
 *.log
 .DS_Store
-
+.tmp/
+backups/
+ToV_*.docx
