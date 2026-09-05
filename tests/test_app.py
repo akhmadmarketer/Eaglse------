@@ -50,5 +50,17 @@ class ConversationMemoryTest(unittest.TestCase):
         self.assertEqual(responses.calls[1]["input"][0]["content"], "После сброса")
 
 
+class KnowledgeBaseTest(unittest.TestCase):
+    def test_service_notes_are_not_in_prompt(self) -> None:
+        """Внутренние заметки не должны попадать в системный промпт модели."""
+        for service_file in ("knowledge/README.md", "knowledge/review-needed.md"):
+            self.assertNotIn(service_file, app.KNOWLEDGE_BASE)
+        self.assertNotIn("Что нужно подтвердить у владельца", app.KNOWLEDGE_BASE)
+
+    def test_facts_are_in_prompt(self) -> None:
+        for facts_file in ("knowledge/static/services.md", "knowledge/dynamic/prices.json"):
+            self.assertIn(facts_file, app.KNOWLEDGE_BASE)
+
+
 if __name__ == "__main__":
     unittest.main()

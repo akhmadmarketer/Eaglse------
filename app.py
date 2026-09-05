@@ -62,17 +62,30 @@ conversation_locks: Dict[str, threading.Lock] = {}
 conversation_state_lock = threading.Lock()
 
 
+# В промпт попадают только каталоги с фактами о клубе. Служебные файлы
+# `knowledge/README.md` и `knowledge/review-needed.md` — внутренние заметки о
+# неподтверждённых и противоречивых данных, модель не должна их пересказывать
+# клиенту.
+KNOWLEDGE_DIRS = ("static", "dynamic")
+
+
 def load_knowledge_base() -> str:
     knowledge_dir = ROOT / "knowledge"
     if not knowledge_dir.is_dir():
         return "База знаний ещё не подключена."
 
     chunks = []
-    for path in sorted(knowledge_dir.rglob("*")):
-        if path.suffix not in {".md", ".json"} or not path.is_file():
+    for directory in KNOWLEDGE_DIRS:
+        source = knowledge_dir / directory
+        if not source.is_dir():
             continue
-        relative = path.relative_to(ROOT)
-        chunks.append(f"\n--- {relative} ---\n{path.read_text(encoding='utf-8')}")
+        for path in sorted(source.rglob("*")):
+            if path.suffix not in {".md", ".json"} or not path.is_file():
+                continue
+            relative = path.relative_to(ROOT)
+            chunks.append(f"\n--- {relative} ---\n{path.read_text(encoding='utf-8')}")
+    if not chunks:
+        return "База знаний ещё не подключена."
     return "".join(chunks)
 
 
