@@ -878,9 +878,11 @@ class RequestHandler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     server = ThreadingHTTPServer(("127.0.0.1", PORT), RequestHandler)
     logger.info(
-        "eagles bot started port=%s model=%s knowledge_chars=%d log_message_text=%s",
+        "eagles bot started port=%s model=%s crm_mode=%s knowledge_chars=%d "
+        "log_message_text=%s",
         PORT,
         OPENAI_MODEL,
+        CRM_MODE,
         len(KNOWLEDGE_BASE),
         LOG_MESSAGE_TEXT,
     )
