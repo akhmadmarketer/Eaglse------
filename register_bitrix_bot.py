@@ -22,33 +22,57 @@ def load_env_file(path: Path) -> None:
 
 load_env_file(ROOT / ".env.local")
 
+USAGE = """Использование:
+  python3 register_bitrix_bot.py <https URL обработчика>            регистрация нового бота
+  python3 register_bitrix_bot.py --update <https URL обработчика>   смена адреса у бота из B24_BOT_ID
+
+Публичный адрес меняется при каждом перезапуске туннеля, поэтому обычный режим
+работы — `--update`. Повторная регистрация создаёт в портале второго бота-дубля.
+"""
+
 webhook_url = os.getenv("B24_WEBHOOK_URL", "").strip().rstrip("/")
 bot_token = os.getenv("B24_BOT_TOKEN", "").strip()
-handler_url = sys.argv[1].strip() if len(sys.argv) > 1 else ""
+
+args = [value.strip() for value in sys.argv[1:]]
+update_mode = "--update" in args
+positional = [value for value in args if not value.startswith("--")]
+handler_url = positional[0] if positional else ""
 
 if not webhook_url or not bot_token:
     raise SystemExit("B24_WEBHOOK_URL или B24_BOT_TOKEN не настроен")
 if not handler_url.startswith("https://"):
-    raise SystemExit("Передайте публичный HTTPS URL обработчика первым аргументом")
+    raise SystemExit(USAGE)
 
-payload = {
-    "fields": {
-        "code": "eagles_openai_bot",
+if update_mode:
+    bot_id = os.getenv("B24_BOT_ID", "").strip()
+    if not bot_id.isdigit():
+        raise SystemExit("B24_BOT_ID не настроен — обновлять нечего")
+    method = "imbot.v2.Bot.update"
+    payload = {
+        "botId": int(bot_id),
         "botToken": bot_token,
-        "type": "bot",
-        "isSupportOpenline": True,
-        "eventMode": "webhook",
-        "webhookUrl": handler_url,
-        "properties": {
-            "name": "Eagles OpenAI Bot",
-            "workPosition": "AI-консультант первой линии",
-            "color": "GREEN",
-        },
+        "fields": {"webhookUrl": handler_url},
     }
-}
+else:
+    method = "imbot.v2.Bot.register"
+    payload = {
+        "fields": {
+            "code": "eagles_openai_bot",
+            "botToken": bot_token,
+            "type": "bot",
+            "isSupportOpenline": True,
+            "eventMode": "webhook",
+            "webhookUrl": handler_url,
+            "properties": {
+                "name": "Eagles OpenAI Bot",
+                "workPosition": "AI-консультант первой линии",
+                "color": "GREEN",
+            },
+        }
+    }
 
 request = urllib.request.Request(
-    f"{webhook_url}/imbot.v2.Bot.register",
+    f"{webhook_url}/{method}",
     data=json.dumps(payload).encode("utf-8"),
     headers={"Content-Type": "application/json", "Accept": "application/json"},
     method="POST",
@@ -67,8 +91,13 @@ if result.get("error"):
     error_description = result.get("error_description", "")
     raise SystemExit(f"Bitrix24 error: {error_code} — {error_description}")
 
-bot_id = result.get("result", {}).get("bot", {}).get("id")
-if not bot_id:
-    raise SystemExit("Bitrix24 не вернул ID зарегистрированного бота")
+returned_bot_id = result.get("result", {}).get("bot", {}).get("id")
+if not returned_bot_id:
+    raise SystemExit("Bitrix24 не вернул ID бота")
 
-print(f"status=registered bot_id={bot_id}")
+if update_mode:
+    print(f"status=updated bot_id={returned_bot_id}")
+    print("Адрес обработчика заменён. B24_BOT_ID менять не нужно.")
+else:
+    print(f"status=registered bot_id={returned_bot_id}")
+    print("Сохраните этот bot_id в B24_BOT_ID файла .env.local.")

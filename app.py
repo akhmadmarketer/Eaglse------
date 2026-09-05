@@ -1,6 +1,9 @@
 import json
+import logging
+import logging.handlers
 import os
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -41,6 +44,50 @@ load_env_file(ROOT / ".env.local")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-luna").strip()
 PORT = int(os.getenv("PORT", "8000"))
+
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+LOG_DIR = ROOT / "logs"
+LOG_FILE = LOG_DIR / "app.log"
+
+# По умолчанию тексты клиентов в журнал не попадают: остаются только длина
+# сообщения и технические идентификаторы. Для разбора конкретного диалога
+# запустите обработчик с LOG_MESSAGE_TEXT=1 и отключите обратно после разбора.
+LOG_MESSAGE_TEXT = os.getenv("LOG_MESSAGE_TEXT", "0").strip().lower() in {"1", "true", "yes"}
+
+
+def setup_logging() -> logging.Logger:
+    """Журнал в файл и в терминал. Секреты и тексты клиентов не пишутся."""
+    LOG_DIR.mkdir(exist_ok=True)
+    log = logging.getLogger("eagles")
+    log.setLevel(getattr(logging, LOG_LEVEL, logging.INFO))
+    log.propagate = False
+    if log.handlers:
+        return log
+
+    formatter = logging.Formatter(
+        fmt="%(asctime)s %(levelname)-7s %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    file_handler = logging.handlers.RotatingFileHandler(
+        LOG_FILE, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
+    )
+    file_handler.setFormatter(formatter)
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(formatter)
+    log.addHandler(file_handler)
+    log.addHandler(stream_handler)
+    return log
+
+
+logger = setup_logging()
+
+
+def describe_text(text: str) -> str:
+    """Что можно записать о сообщении клиента, не раскрывая переписку."""
+    if LOG_MESSAGE_TEXT:
+        return f"chars={len(text)} text={text!r}"
+    return f"chars={len(text)}"
+
 B24_WEBHOOK_URL = os.getenv("B24_WEBHOOK_URL", "").strip().rstrip("/")
 B24_BOT_ID = os.getenv("B24_BOT_ID", "").strip()
 B24_BOT_TOKEN = os.getenv("B24_BOT_TOKEN", "").strip()
@@ -160,16 +207,44 @@ def make_openai_reply(message: str, conversation_id: str = "local-default") -> s
     with conversation_lock:
         input_messages = get_conversation_history(conversation_id)
         input_messages.append({"role": "user", "content": message})
-        response = client.responses.create(
-            model=OPENAI_MODEL,
-            instructions=BOT_INSTRUCTIONS,
-            input=input_messages,
-            max_output_tokens=450,
-            store=False,
+        logger.info(
+            "openai request conversation=%s history=%d %s",
+            conversation_id,
+            len(input_messages) - 1,
+            describe_text(message),
         )
+        started = time.monotonic()
+        try:
+            response = client.responses.create(
+                model=OPENAI_MODEL,
+                instructions=BOT_INSTRUCTIONS,
+                input=input_messages,
+                max_output_tokens=450,
+                store=False,
+            )
+        except Exception as exc:
+            logger.error(
+                "openai failed conversation=%s after=%.1fs %s: %s",
+                conversation_id,
+                time.monotonic() - started,
+                type(exc).__name__,
+                exc,
+            )
+            raise
         reply = response.output_text.strip()
         if not reply:
+            logger.error(
+                "openai returned empty reply conversation=%s after=%.1fs",
+                conversation_id,
+                time.monotonic() - started,
+            )
             raise RuntimeError("OpenAI вернул пустой ответ")
+        logger.info(
+            "openai reply conversation=%s after=%.1fs chars=%d",
+            conversation_id,
+            time.monotonic() - started,
+            len(reply),
+        )
         save_conversation_turn(conversation_id, message, reply)
         return reply
 
@@ -277,6 +352,7 @@ def send_bitrix_reply(chat_id: str, reply: str) -> None:
     if not all((B24_WEBHOOK_URL, B24_BOT_ID, B24_BOT_TOKEN)):
         raise RuntimeError("Bitrix24 credentials are not configured")
 
+    logger.info("bitrix send reply chat=%s chars=%d", chat_id, len(reply))
     url = f"{B24_WEBHOOK_URL}/imbot.v2.Chat.Message.send"
     request_body = json.dumps(
         {
@@ -306,6 +382,12 @@ def send_bitrix_reply(chat_id: str, reply: str) -> None:
     if result.get("error"):
         error_code = str(result.get("error") or "unknown_error")
         error_description = str(result.get("error_description") or "")
+        logger.error(
+            "bitrix rejected reply chat=%s error=%s %s",
+            chat_id,
+            error_code,
+            error_description,
+        )
         raise RuntimeError(
             f"Bitrix24 rejected the reply: {error_code} — {error_description}"
         )
@@ -389,7 +471,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         try:
             reply = make_openai_reply(message, conversation_id=f"local:{session_id}")
         except Exception as exc:
-            print(f"OpenAI request failed: {type(exc).__name__}")
+            logger.error("local chat request failed: %s: %s", type(exc).__name__, exc)
             self.send_json(502, {"error": "openai_request_failed"})
             return
 
@@ -428,13 +510,35 @@ class RequestHandler(BaseHTTPRequestHandler):
             and self.headers.get("X-Local-Test") == "1"
         )
         event = normalize_bitrix_event(payload, is_json)
+        logger.info(
+            "bitrix event=%s chat=%s message=%s author=%s bot=%s entity=%s local_test=%s %s",
+            event["event"] or "-",
+            event["chat_id"] or "-",
+            event["message_id"] or "-",
+            event["author_id"] or "-",
+            event["bot_id"] or "-",
+            event["entity_type"] or "-",
+            local_test,
+            describe_text(event["message"]),
+        )
         valid, reason = validate_bitrix_event(event, local_test)
         if not valid:
             status = 200 if reason.endswith("ignored") or reason == "not_open_line" else 403
+            logger.warning(
+                "bitrix event rejected reason=%s chat=%s message=%s",
+                reason,
+                event["chat_id"] or "-",
+                event["message_id"] or "-",
+            )
             self.send_json(status, {"status": reason})
             return
 
         if not remember_message(event["message_id"]):
+            logger.warning(
+                "bitrix duplicate ignored chat=%s message=%s",
+                event["chat_id"] or "-",
+                event["message_id"] or "-",
+            )
             self.send_json(200, {"status": "duplicate_ignored"})
             return
 
@@ -442,7 +546,12 @@ class RequestHandler(BaseHTTPRequestHandler):
             try:
                 reply = process_bitrix_message(event, deliver=False)
             except Exception as exc:
-                print(f"Local Bitrix event test failed: {type(exc).__name__}")
+                logger.error(
+                    "local bitrix test failed chat=%s %s: %s",
+                    event["chat_id"] or "-",
+                    type(exc).__name__,
+                    exc,
+                )
                 self.send_json(502, {"error": "processing_failed"})
                 return
             self.send_json(200, {"status": "simulated", "reply": reply})
@@ -459,19 +568,38 @@ class RequestHandler(BaseHTTPRequestHandler):
     def process_bitrix_in_background(event: Dict[str, str]) -> None:
         try:
             process_bitrix_message(event, deliver=True)
-            print("Bitrix24 message processed")
-        except Exception as exc:
-            print(f"Bitrix24 processing failed: {type(exc).__name__}: {exc}")
+            logger.info(
+                "bitrix message processed chat=%s message=%s",
+                event["chat_id"] or "-",
+                event["message_id"] or "-",
+            )
+        except Exception:
+            logger.exception(
+                "bitrix processing failed chat=%s message=%s",
+                event["chat_id"] or "-",
+                event["message_id"] or "-",
+            )
 
     def log_message(self, format: str, *args: Any) -> None:
         # Не записываем тексты клиентов или секреты в лог.
-        print(f"{self.command} {self.path} -> {args[1] if len(args) > 1 else '-'}")
+        logger.info(
+            "http %s %s -> %s",
+            self.command,
+            self.path,
+            args[1] if len(args) > 1 else "-",
+        )
 
 
 if __name__ == "__main__":
     server = ThreadingHTTPServer(("127.0.0.1", PORT), RequestHandler)
-    print(f"Eagles bot listening on http://127.0.0.1:{PORT}")
-    print("Health: GET /health | OpenAI test: POST /chat | Bitrix: POST /bitrix/events")
+    logger.info(
+        "eagles bot started port=%s model=%s knowledge_chars=%d log_message_text=%s",
+        PORT,
+        OPENAI_MODEL,
+        len(KNOWLEDGE_BASE),
+        LOG_MESSAGE_TEXT,
+    )
+    logger.info("журнал: %s", LOG_FILE)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
