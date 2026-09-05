@@ -10,6 +10,12 @@
 # Особенность бесплатного туннеля pinggy: он живёт 60 минут. Скрипт сам
 # переподключается заранее и заново привязывает новый адрес к боту.
 #
+# Прямой доступ к a.pinggy.io:443 из этой сети пропадает: TCP-соединение
+# зависает, не доходя до приветствия SSH. Поэтому при неудаче скрипт повторяет
+# попытку через socks-прокси, который уже используется для OpenAI. Адрес прокси
+# берётся из EAGLES_SOCKS_PROXY, иначе из ALL_PROXY, иначе 127.0.0.1:10808.
+# Маршрут на публичный адрес не влияет: туннель отдаёт сам pinggy.
+#
 # Зачем сторожевая проверка: туннель может перестать работать на стороне
 # провайдера, при этом ssh-клиент остаётся жив, а TCP-соединение — в состоянии
 # ESTAB. Внутренними средствами такой обрыв не виден: Bitrix24 стучится на
@@ -30,7 +36,19 @@ LOG_DIR="$ROOT/logs"
 TUNNEL_LOG="$LOG_DIR/tunnel.log"
 mkdir -p "$LOG_DIR"
 
+SOCKS_PROXY="${EAGLES_SOCKS_PROXY:-}"
+if [ -z "$SOCKS_PROXY" ]; then
+    for candidate in "${ALL_PROXY:-}" "${all_proxy:-}"; do
+        case "$candidate" in
+            socks*://*) SOCKS_PROXY="${candidate#*://}"; SOCKS_PROXY="${SOCKS_PROXY%/}"; break ;;
+        esac
+    done
+fi
+SOCKS_PROXY="${SOCKS_PROXY:-127.0.0.1:10808}"
+
 SSH_PID=""
+# Маршрут, который сработал в прошлый раз: с него начинаем следующую попытку.
+PREFERRED_ROUTE="direct"
 
 say() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "$TUNNEL_LOG"; }
 
@@ -50,35 +68,74 @@ if ! curl -s --noproxy '*' -m 5 -o /dev/null "http://127.0.0.1:$PORT/health"; th
     exit 1
 fi
 
-while true; do
-    SESSION_LOG="$(mktemp)"
+start_tunnel() {
+    # $1 — маршрут: direct или socks. Запускает ssh и печатает найденный адрес.
+    local route="$1" log="$2"
 
-    noproxy ssh -p 443 \
-                -o StrictHostKeyChecking=accept-new \
-                -o ServerAliveInterval=30 \
-                -o ServerAliveCountMax=3 \
-                -R "0:localhost:$PORT" a.pinggy.io > "$SESSION_LOG" 2>&1 < /dev/null &
+    if [ "$route" = "socks" ]; then
+        if ! command -v nc > /dev/null; then
+            say "socks-маршрут недоступен: нет утилиты nc"
+            return 1
+        fi
+        ssh -o ProxyCommand="nc -X 5 -x $SOCKS_PROXY %h %p" \
+            -o StrictHostKeyChecking=accept-new \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=3 \
+            -p 443 -R "0:localhost:$PORT" a.pinggy.io > "$log" 2>&1 < /dev/null &
+    else
+        noproxy ssh -o StrictHostKeyChecking=accept-new \
+                    -o ServerAliveInterval=30 \
+                    -o ServerAliveCountMax=3 \
+                    -p 443 -R "0:localhost:$PORT" a.pinggy.io > "$log" 2>&1 < /dev/null &
+    fi
     SSH_PID=$!
-    STARTED=$SECONDS
 
-    URL=""
-    for _ in $(seq 1 30); do
-        URL=$(grep -oE 'https://[a-z0-9.-]+\.(free\.pinggy\.net|pinggy-free\.link)' "$SESSION_LOG" | head -1)
-        [ -n "$URL" ] && break
+    local found=""
+    for _ in $(seq 1 15); do
+        found=$(grep -oE 'https://[a-z0-9.-]+\.(free\.pinggy\.net|pinggy-free\.link)' "$log" | head -1)
+        [ -n "$found" ] && break
         kill -0 "$SSH_PID" 2>/dev/null || break
         sleep 1
     done
 
-    if [ -z "$URL" ]; then
-        say "адрес не получен, повтор через 10 секунд. Последние строки:"
-        tail -3 "$SESSION_LOG" | tee -a "$TUNNEL_LOG"
+    if [ -z "$found" ]; then
         kill "$SSH_PID" 2>/dev/null
+        SSH_PID=""
+        return 1
+    fi
+    URL="$found"
+    return 0
+}
+
+while true; do
+    SESSION_LOG="$(mktemp)"
+    URL=""
+
+    if [ "$PREFERRED_ROUTE" = "socks" ]; then
+        ROUTES="socks direct"
+    else
+        ROUTES="direct socks"
+    fi
+
+    for route in $ROUTES; do
+        if start_tunnel "$route" "$SESSION_LOG"; then
+            PREFERRED_ROUTE="$route"
+            [ "$route" = "socks" ] && say "прямой маршрут не сработал, идём через socks $SOCKS_PROXY"
+            break
+        fi
+        say "маршрут $route не дал адреса"
+    done
+
+    if [ -z "$URL" ]; then
+        say "туннель не поднялся ни напрямую, ни через socks. Последние строки:"
+        tail -3 "$SESSION_LOG" | tee -a "$TUNNEL_LOG"
         rm -f "$SESSION_LOG"
         sleep 10
         continue
     fi
 
-    say "туннель поднят: $URL"
+    STARTED=$SECONDS
+    say "туннель поднят: $URL (маршрут $PREFERRED_ROUTE)"
 
     if [ "${EAGLES_SKIP_UPDATE:-0}" = "1" ]; then
         say "привязка к боту пропущена (EAGLES_SKIP_UPDATE=1)"

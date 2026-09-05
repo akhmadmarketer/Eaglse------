@@ -299,33 +299,37 @@ class BitrixClient:
             "operators": [str(item) for item in dialog.get("manager_list") or []],
         }
 
-    def find_active_deal(self, contact_id: str) -> Optional[str]:
-        """Открытая сделка контакта в основной воронке.
+    def contact_deals(self, contact_id: str) -> Dict[str, Any]:
+        """Сделки контакта одним запросом: открытая и признак покупки.
 
         Контакт — устойчивый якорь: он есть в связи чата, не закрывается и не
-        удаляется в обычной работе. Сделка же живёт от обращения до закрытия,
-        поэтому одна сделка на чат навсегда была бы неверной моделью: вторая
-        покупка того же клиента должна стать отдельной сделкой.
+        удаляется в обычной работе. Сделка живёт от обращения до закрытия,
+        поэтому вторая покупка того же клиента должна стать отдельной сделкой.
+
+        Наличие карточки контакта не делает человека клиентом: Bitrix24 заводит
+        контакт на каждое обращение из Instagram. Действующим клиентом считаем
+        только того, у кого есть успешно закрытая сделка.
         """
+        result: Dict[str, Any] = {"active_deal_id": None, "has_won_deal": False}
         try:
             found = self.call(
                 "crm.deal.list",
                 {
-                    "filter": {
-                        "CONTACT_ID": int(contact_id),
-                        "CATEGORY_ID": 0,
-                        "CLOSED": "N",
-                    },
-                    "select": ["ID"],
+                    "filter": {"CONTACT_ID": int(contact_id), "CATEGORY_ID": 0},
+                    "select": ["ID", "CLOSED", "STAGE_SEMANTIC_ID"],
                     "order": {"ID": "DESC"},
                 },
             )
         except (BitrixError, ValueError) as exc:
-            logger.warning("поиск сделки контакта %s не удался: %s", contact_id, exc)
-            return None
-        if isinstance(found, list) and found:
-            return str(found[0].get("ID"))
-        return None
+            logger.warning("сделки контакта %s не прочитаны: %s", contact_id, exc)
+            return result
+
+        for item in found if isinstance(found, list) else []:
+            if str(item.get("STAGE_SEMANTIC_ID") or "") == "S":
+                result["has_won_deal"] = True
+            if not result["active_deal_id"] and str(item.get("CLOSED") or "") == "N":
+                result["active_deal_id"] = str(item.get("ID"))
+        return result
 
     def deal_id_by_chat_field(self, chat_id: str) -> Optional[str]:
         try:
@@ -393,7 +397,9 @@ class BitrixClient:
         for logical, uf_name in DEAL_FIELD_MAP.items():
             raw = deal.get(uf_name)
             info = known.get(uf_name)
-            if raw in (None, "", []):
+            # Незаполненное множественное поле приходит как False, а не как
+            # пустой список; ноль в числовом поле при этом значением остаётся.
+            if raw is None or raw is False or (isinstance(raw, (str, list)) and not raw):
                 values[logical] = [] if logical in MULTIPLE_FIELDS else None
                 continue
             if info and info["type"] == "enumeration":

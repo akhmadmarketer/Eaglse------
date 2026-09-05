@@ -53,10 +53,16 @@ class FakeBitrix(bitrix_crm.BitrixClient):
                 "manager_list": self.operators,
             }
         if method == "crm.deal.list":
-            # Поиск открытой сделки контакта; удалённая сделка не находится.
+            # Сделки контакта; удалённая сделка не находится.
             if self.deleted or not self.deal_id:
                 return []
-            return [{"ID": str(self.deal_id)}]
+            return [
+                {
+                    "ID": str(self.deal_id),
+                    "CLOSED": "N",
+                    "STAGE_SEMANTIC_ID": "P",
+                }
+            ]
         if method == "crm.deal.add":
             self.created.append(payload)
             self.deleted = False
@@ -231,6 +237,32 @@ class BitrixPipelineTest(unittest.TestCase):
         self.run_message(crm, decisions=[decision(crm_analysis={"request_type": "upsell"})])
         self.assertEqual(len(crm.created), 1)
 
+    def test_contact_without_won_deal_is_not_an_existing_client(self):
+        """Карточка контакта есть у каждого написавшего — это ещё не клиент."""
+        crm = FakeBitrix(stage="UC_JMBAX5")
+        _, fake = self.run_message(crm)
+
+        sent = fake.responses.calls[0]["input"][0]["content"]
+        self.assertIn('"is_existing_client": false', sent)
+
+    def test_contact_with_won_deal_is_an_existing_client(self):
+        crm = FakeBitrix(stage="UC_JMBAX5")
+        original = crm.call
+
+        def with_won(method, payload=None):
+            if method == "crm.deal.list":
+                return [
+                    {"ID": "13", "CLOSED": "N", "STAGE_SEMANTIC_ID": "P"},
+                    {"ID": "5", "CLOSED": "Y", "STAGE_SEMANTIC_ID": "S"},
+                ]
+            return original(method, payload)
+
+        crm.call = with_won
+        _, fake = self.run_message(crm)
+
+        sent = fake.responses.calls[0]["input"][0]["content"]
+        self.assertIn('"is_existing_client": true', sent)
+
     def test_deal_is_found_through_the_contact(self):
         """Сделку ищем по контакту, а не по одноразовой связи чата."""
         crm = FakeBitrix(stage="UC_JMBAX5")
@@ -247,7 +279,7 @@ class BitrixPipelineTest(unittest.TestCase):
         deal_lists = [p for m, p in calls if m == "crm.deal.list"]
         self.assertTrue(deal_lists)
         self.assertEqual(deal_lists[0]["filter"]["CONTACT_ID"], 9)
-        self.assertEqual(deal_lists[0]["filter"]["CLOSED"], "N")
+        self.assertEqual(deal_lists[0]["filter"]["CATEGORY_ID"], 0)
 
     def test_plan_mode_reports_the_deal_it_would_create(self):
         """В режиме plan сделка не создаётся, но намерение видно в журнале."""

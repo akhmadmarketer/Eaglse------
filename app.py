@@ -356,13 +356,14 @@ def read_crm_context(
     context["session_id"] = info["session_id"]
 
     contact_id = info["contact_id"]
-    if contact_id:
-        contact.update(read_contact_context(contact_id))
-        contact["is_existing_client"] = True
-
     deal_id = None
     if contact_id:
-        deal_id = crm.find_active_deal(contact_id)
+        contact.update(read_contact_context(contact_id))
+        # Карточка контакта есть у каждого написавшего, поэтому действующим
+        # клиентом считаем только того, у кого есть успешно закрытая сделка.
+        deals = crm.contact_deals(contact_id)
+        contact["is_existing_client"] = deals["has_won_deal"]
+        deal_id = deals["active_deal_id"]
     if not deal_id:
         deal_id = crm.deal_id_by_chat_field(chat_id)
 

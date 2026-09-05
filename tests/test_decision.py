@@ -185,6 +185,19 @@ class EnumMappingTest(unittest.TestCase):
         self.assertIsInstance(value, list)
         self.assertEqual(len(value), 2)
 
+    def test_empty_multiple_field_is_read_as_empty_list(self):
+        """Незаполненное множественное поле Bitrix24 отдаёт как False."""
+        values = make_client().to_logical(
+            {
+                "UF_CRM_1788533932": False,
+                "UF_CRM_EAGLES_TEAM_REQUIRED_SERVICES": False,
+                "UF_CRM_EAGLES_PARTICIPANT_AGE": 0,
+            }
+        )
+        self.assertEqual(values["additional_services"], [])
+        self.assertEqual(values["team_required_services"], [])
+        self.assertEqual(values["participant_age"], 0)
+
     def test_to_logical_reverses_enum_ids(self):
         values = self.crm.to_logical(
             {
@@ -302,7 +315,46 @@ class PlanUpdatesTest(unittest.TestCase):
         self.assertEqual(applied["handoff_reason"], "client_requested_human")
         self.assertIn("Взрослый новичок", applied["manager_summary"])
         self.assertIn("Позвонить и записать", applied["manager_summary"])
-        self.assertIn("телефон", applied["missing_data"])
+        # Полное состояние из crm_analysis важнее пересказа в блоке передачи.
+        self.assertEqual(applied["missing_data"], "предпочтительное время")
+
+    def test_missing_data_does_not_repeat_itself(self):
+        """Одно и то же приходит из анализа и из блока передачи."""
+        _, applied, _ = self.plan(
+            decision(
+                action="reply_and_handoff",
+                crm_analysis={
+                    "missing_data": ["подтвердить наличие места и подходящую группу"]
+                },
+                handoff={
+                    "required": True,
+                    "reason": "client_ready",
+                    "summary": "Резюме",
+                    "manager_task": "Связаться",
+                    "missing_data": ["наличие места", "подходящая группа"],
+                },
+            )
+        )
+        self.assertEqual(
+            applied["missing_data"],
+            "подтвердить наличие места и подходящую группу",
+        )
+
+    def test_handoff_missing_data_is_used_when_analysis_is_empty(self):
+        _, applied, _ = self.plan(
+            decision(
+                action="reply_and_handoff",
+                crm_analysis={"missing_data": []},
+                handoff={
+                    "required": True,
+                    "reason": "client_ready",
+                    "summary": "Резюме",
+                    "manager_task": "Связаться",
+                    "missing_data": ["наличие места", "подходящая группа"],
+                },
+            )
+        )
+        self.assertEqual(applied["missing_data"], "наличие места; подходящая группа")
 
     def test_conflicts_are_written_to_conflict_field(self):
         _, applied, _ = self.plan(
