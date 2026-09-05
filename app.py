@@ -14,6 +14,9 @@ from typing import Any, Deque, Dict, List, Optional, Tuple
 
 from openai import OpenAI
 
+import bitrix_crm
+import sales_decision
+
 
 ROOT = Path(__file__).resolve().parent
 MAX_BODY_BYTES = 32 * 1024
@@ -93,6 +96,17 @@ B24_BOT_ID = os.getenv("B24_BOT_ID", "").strip()
 B24_BOT_TOKEN = os.getenv("B24_BOT_TOKEN", "").strip()
 B24_APPLICATION_TOKEN = os.getenv("B24_APPLICATION_TOKEN", "").strip()
 
+# Режим работы с CRM:
+#   off   — сделка не читается и не пишется, бот только отвечает;
+#   plan  — сделка читается, план записи попадает только в журнал;
+#   apply — план записи выполняется в Bitrix24.
+# По умолчанию plan: запись в рабочую воронку владелец включает осознанно.
+CRM_MODE = os.getenv("EAGLES_CRM_MODE", "plan").strip().lower()
+if CRM_MODE not in {"off", "plan", "apply"}:
+    raise RuntimeError("EAGLES_CRM_MODE должен быть off, plan или apply")
+
+crm = bitrix_crm.BitrixClient(B24_WEBHOOK_URL)
+
 if not OPENAI_API_KEY:
     raise RuntimeError("OPENAI_API_KEY не найден в окружении или .env.local")
 
@@ -138,37 +152,7 @@ def load_knowledge_base() -> str:
 
 KNOWLEDGE_BASE = load_knowledge_base()
 
-BOT_INSTRUCTIONS = f"""Ты — консультант Академии единоборств «ИГЛС».
-Твоя задача — доброжелательно и активно вести диалог, понять потребность клиента
-и помочь выбрать подходящее направление или следующий шаг.
-
-Правила диалога:
-1. Сначала прямо ответь на вопрос клиента, затем продолжи консультацию.
-2. Учитывай всю историю беседы и не спрашивай повторно то, что клиент уже сообщил.
-3. Если цель клиента ещё не ясна, в конце ответа задай ровно один короткий и
-   уместный вопрос. Не задавай анкету из нескольких вопросов сразу.
-4. Последовательно выясняй только нужное: цель, возраст занимающегося, опыт,
-   предпочтение группы или персональных занятий и удобное время.
-5. Не приветствуй клиента заново в каждом сообщении и не завершай разговор
-   фразами вроде «обращайтесь», пока консультация не закончена.
-6. Не задавай вопрос, если клиент явно попросил закончить разговор, отказался
-   или попрощался.
-7. Не дави на клиента и не отправляй сообщения без нового сообщения от него.
-
-Правила достоверности:
-- Используй только сведения из базы знаний ниже.
-- Не выдумывай цены, расписание, свободные места, медицинские рекомендации,
-  квалификацию сотрудников и условия договора.
-- Данные со статусом conflict, incomplete, needs_confirmation или past не
-  выдавай как подтверждённые. Кратко обозначь, что именно нужно уточнить.
-- Не останавливай всю консультацию из-за одного неизвестного факта: продолжай
-  выяснять потребность и предложи передачу конкретного вопроса сотруднику.
-- На тестовом этапе не подтверждай запись и не принимай оплату.
-- Отвечай по-русски, естественно и кратко, обычно 2–5 предложений.
-
-БАЗА ЗНАНИЙ:
-{KNOWLEDGE_BASE}
-"""
+SALES_INSTRUCTIONS = sales_decision.build_instructions(KNOWLEDGE_BASE)
 
 
 def get_conversation_lock(conversation_id: str) -> threading.Lock:
@@ -202,50 +186,274 @@ def reset_conversation(conversation_id: str) -> None:
         conversation_histories.pop(conversation_id, None)
 
 
-def make_openai_reply(message: str, conversation_id: str = "local-default") -> str:
-    conversation_lock = get_conversation_lock(conversation_id)
-    with conversation_lock:
-        input_messages = get_conversation_history(conversation_id)
-        input_messages.append({"role": "user", "content": message})
-        logger.info(
-            "openai request conversation=%s history=%d %s",
-            conversation_id,
-            len(input_messages) - 1,
-            describe_text(message),
+def build_recent_messages(conversation_id: str) -> List[Dict[str, str]]:
+    """История беседы в терминах блока RECENT_MESSAGES."""
+    return [
+        {
+            "role": "client" if item["role"] == "user" else "bot",
+            "text": item["content"],
+        }
+        for item in get_conversation_history(conversation_id)
+    ]
+
+
+def make_decision(
+    message: str,
+    conversation_id: str,
+    *,
+    crm_context: Dict[str, Any],
+    contact_context: Dict[str, Any],
+    message_id: str = "",
+) -> Dict[str, Any]:
+    """Одно структурированное решение модели: ответ клиенту и план для CRM."""
+    user_input = sales_decision.build_model_input(
+        current_time=bitrix_crm.now_iso(),
+        crm_context=crm_context,
+        contact_context=contact_context,
+        recent_messages=build_recent_messages(conversation_id),
+        current_message={"message_id": message_id, "text": message},
+    )
+    logger.info(
+        "openai request conversation=%s deal=%s stage=%s history=%d %s",
+        conversation_id,
+        crm_context.get("deal_id") or "-",
+        crm_context.get("stage") or "-",
+        len(get_conversation_history(conversation_id)),
+        describe_text(message),
+    )
+
+    started = time.monotonic()
+    try:
+        decision = sales_decision.request_decision(
+            client,
+            model=OPENAI_MODEL,
+            instructions=SALES_INSTRUCTIONS,
+            user_input=user_input,
         )
-        started = time.monotonic()
-        try:
-            response = client.responses.create(
-                model=OPENAI_MODEL,
-                instructions=BOT_INSTRUCTIONS,
-                input=input_messages,
-                max_output_tokens=450,
-                store=False,
-            )
-        except Exception as exc:
-            logger.error(
-                "openai failed conversation=%s after=%.1fs %s: %s",
-                conversation_id,
-                time.monotonic() - started,
-                type(exc).__name__,
-                exc,
-            )
-            raise
-        reply = response.output_text.strip()
-        if not reply:
-            logger.error(
-                "openai returned empty reply conversation=%s after=%.1fs",
-                conversation_id,
-                time.monotonic() - started,
-            )
-            raise RuntimeError("OpenAI вернул пустой ответ")
-        logger.info(
-            "openai reply conversation=%s after=%.1fs chars=%d",
+    except Exception as exc:
+        logger.error(
+            "openai failed conversation=%s after=%.1fs %s: %s",
             conversation_id,
             time.monotonic() - started,
-            len(reply),
+            type(exc).__name__,
+            exc,
         )
-        save_conversation_turn(conversation_id, message, reply)
+        raise
+
+    analysis = decision.get("crm_analysis", {})
+    logger.info(
+        "openai decision conversation=%s after=%.1fs action=%s state=%s barrier=%s "
+        "next=%s stage=%s handoff=%s facts=%d conflicts=%d",
+        conversation_id,
+        time.monotonic() - started,
+        decision.get("action"),
+        analysis.get("client_state"),
+        analysis.get("main_barrier"),
+        analysis.get("next_action"),
+        decision.get("stage_transition", {}).get("target"),
+        bool(decision.get("handoff", {}).get("required")),
+        len(decision.get("extracted_facts") or []),
+        len(decision.get("conflicts") or []),
+    )
+
+    problems = sales_decision.check_semantics(decision)
+    if problems:
+        logger.warning(
+            "decision inconsistent conversation=%s problems=%s",
+            conversation_id,
+            ",".join(problems),
+        )
+    return decision
+
+
+EMPTY_CONTACT_CONTEXT: Dict[str, Any] = {
+    "name": "",
+    "current_channel_available": True,
+    "has_phone": False,
+    "has_email": False,
+    "is_existing_client": False,
+}
+
+# Технические поля интеграции модели не нужны.
+TECHNICAL_FIELDS = (
+    "openline_chat_id",
+    "openline_session_id",
+    "ai_last_analyzed_at",
+    "ai_rules_version",
+)
+
+
+def read_contact_context(contact_id: str) -> Dict[str, Any]:
+    """Минимальные сведения о контакте: имя и наличие каналов связи."""
+    try:
+        record = crm.call("crm.contact.get", {"id": int(contact_id)})
+    except (bitrix_crm.BitrixError, ValueError) as exc:
+        logger.warning("контакт %s не прочитан: %s", contact_id, exc)
+        return {}
+    if not isinstance(record, dict):
+        return {}
+    return {
+        "name": str(record.get("NAME") or "").strip(),
+        "has_phone": str(record.get("HAS_PHONE") or "N") == "Y",
+        "has_email": str(record.get("HAS_EMAIL") or "N") == "Y",
+    }
+
+
+def read_crm_context(
+    chat_id: str,
+) -> Tuple[Optional[str], Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+    """Сделка чата: (deal_id, CRM_CONTEXT, CONTACT_CONTEXT, текущие значения)."""
+    context: Dict[str, Any] = {
+        "deal_id": None,
+        "stage": "not_linked",
+        "manager_has_joined": False,
+        "bot_may_reply": True,
+        "last_modified_at": None,
+        "session_id": None,
+        "fields": {},
+    }
+    contact = dict(EMPTY_CONTACT_CONTEXT)
+
+    if CRM_MODE == "off" or not crm.configured:
+        context["stage"] = "crm_disabled"
+        return None, context, contact, {}
+
+    info = crm.dialog_info(chat_id)
+    if not info["read"]:
+        # Актуальное состояние диалога неизвестно: вмешиваться нельзя.
+        context["stage"] = "unreadable"
+        context["bot_may_reply"] = False
+        return None, context, contact, {}
+
+    context["manager_has_joined"] = any(
+        operator != B24_BOT_ID for operator in info["operators"]
+    )
+    context["session_id"] = info["session_id"]
+    deal_id = info["deal_id"] or crm.deal_id_by_chat_field(chat_id)
+    deal = None
+    while deal_id and deal is None:
+        try:
+            deal = crm.read_deal(deal_id)
+        except bitrix_crm.BitrixNotFound:
+            # Чат помнит удалённую сделку: пробуем свою связь, иначе работаем
+            # без сделки. Молчать из-за этого нельзя.
+            logger.warning("чат %s ссылается на удалённую сделку %s", chat_id, deal_id)
+            fallback = crm.deal_id_by_chat_field(chat_id)
+            deal_id = fallback if fallback and fallback != deal_id else None
+        except bitrix_crm.BitrixError as exc:
+            logger.error("сделка %s не прочитана: %s", deal_id, exc)
+            context["stage"] = "unreadable"
+            context["bot_may_reply"] = False
+            return None, context, contact, {}
+
+    if deal is None or not deal_id:
+        context["stage"] = "not_linked"
+        context["bot_may_reply"] = not context["manager_has_joined"]
+        return None, context, contact, {}
+
+    values = crm.to_logical(deal)
+    stage_id = str(deal.get("STAGE_ID") or "")
+    stage = bitrix_crm.STAGE_NAMES.get(stage_id, stage_id or "unknown")
+    context.update(
+        deal_id=deal_id,
+        stage=stage,
+        last_modified_at=deal.get("DATE_MODIFY"),
+        bot_may_reply=(
+            stage in bitrix_crm.BOT_STAGES and not context["manager_has_joined"]
+        ),
+        fields={
+            name: value
+            for name, value in values.items()
+            if value not in (None, "", []) and name not in TECHNICAL_FIELDS
+        },
+    )
+
+    contact_id = info["contact_id"] or str(deal.get("CONTACT_ID") or "")
+    if contact_id and contact_id != "0":
+        contact.update(read_contact_context(contact_id))
+        contact["is_existing_client"] = True
+    return deal_id, context, contact, values
+
+
+def recheck_deal(deal_id: str, chat_id: str) -> Tuple[str, bool]:
+    """Стадия и признак подключения менеджера непосредственно перед записью."""
+    deal = crm.read_deal(deal_id)
+    stage_id = str(deal.get("STAGE_ID") or "")
+    info = crm.dialog_info(chat_id)
+    manager_joined = bool(info["read"]) and any(
+        operator != B24_BOT_ID for operator in info["operators"]
+    )
+    return bitrix_crm.STAGE_NAMES.get(stage_id, stage_id or "unknown"), manager_joined
+
+
+def apply_decision(
+    deal_id: str,
+    chat_id: str,
+    decision: Dict[str, Any],
+    current_values: Dict[str, Any],
+    current_stage: str,
+    session_id: Optional[str] = None,
+) -> None:
+    """Записать разрешённые поля и разрешённый переход стадии одним вызовом."""
+    fields, applied, rejected = sales_decision.plan_updates(
+        decision, current_values, crm
+    )
+    stage_target, stage_rejection = sales_decision.resolve_stage(
+        current_stage, decision
+    )
+    if stage_rejection:
+        logger.warning("stage rejected deal=%s %s", deal_id, stage_rejection)
+    if rejected:
+        logger.warning("fields rejected deal=%s %s", deal_id, "; ".join(rejected))
+
+    technical = {
+        "openline_chat_id": str(chat_id),
+        "ai_last_analyzed_at": bitrix_crm.now_iso(),
+        "ai_rules_version": bitrix_crm.RULES_VERSION,
+    }
+    if session_id:
+        technical["openline_session_id"] = str(session_id)
+    for name, value in technical.items():
+        if current_values.get(name) == value:
+            continue
+        accepted, rest_value, _ = crm.to_rest(name, value)
+        if accepted:
+            fields[bitrix_crm.DEAL_FIELD_MAP[name]] = rest_value
+
+    if stage_target:
+        fields["STAGE_ID"] = bitrix_crm.STAGE_IDS[stage_target]
+
+    logger.info(
+        "crm plan deal=%s mode=%s stage=%s->%s fields=%s",
+        deal_id,
+        CRM_MODE,
+        current_stage,
+        stage_target or current_stage,
+        ",".join(sorted(applied)) or "-",
+    )
+    if CRM_MODE == "apply" and fields:
+        crm.update_deal(deal_id, fields)
+        logger.info("crm applied deal=%s fields=%d", deal_id, len(fields))
+
+
+def make_local_reply(message: str, conversation_id: str) -> str:
+    """Локальный чат без CRM: тот же промпт и та же схема решения."""
+    with get_conversation_lock(conversation_id):
+        decision = make_decision(
+            message,
+            conversation_id,
+            crm_context={
+                "deal_id": None,
+                "stage": "local_test",
+                "manager_has_joined": False,
+                "bot_may_reply": True,
+                "fields": {},
+            },
+            contact_context=dict(EMPTY_CONTACT_CONTEXT),
+        )
+        reply = str(decision.get("reply", {}).get("text") or "").strip()
+        if reply:
+            save_conversation_turn(conversation_id, message, reply)
         return reply
 
 
@@ -393,13 +601,87 @@ def send_bitrix_reply(chat_id: str, reply: str) -> None:
         )
 
 
-def process_bitrix_message(event: Dict[str, str], deliver: bool = True) -> str:
-    reply = make_openai_reply(
-        event["message"].strip(), conversation_id=f"bitrix:{event['chat_id']}"
-    )
-    if deliver:
-        send_bitrix_reply(event["chat_id"], reply)
-    return reply
+def process_bitrix_message(
+    event: Dict[str, str], deliver: bool = True
+) -> Optional[str]:
+    """Полный цикл одного сообщения: контекст сделки, решение, запись, ответ."""
+    chat_id = event["chat_id"]
+    message = event["message"].strip()
+    conversation_id = f"bitrix:{chat_id}"
+
+    with get_conversation_lock(conversation_id):
+        deal_id, crm_context, contact_context, current_values = read_crm_context(chat_id)
+        if not crm_context["bot_may_reply"]:
+            logger.info(
+                "бот молчит chat=%s deal=%s stage=%s manager=%s",
+                chat_id,
+                deal_id or "-",
+                crm_context["stage"],
+                crm_context["manager_has_joined"],
+            )
+            return None
+
+        decision = make_decision(
+            message,
+            conversation_id,
+            crm_context=crm_context,
+            contact_context=contact_context,
+            message_id=event["message_id"],
+        )
+
+        reply = str(decision.get("reply", {}).get("text") or "").strip()
+        should_send = bool(decision.get("reply", {}).get("should_send")) and bool(reply)
+        handoff = sales_decision.needs_handoff(decision)
+
+        crm_written = True
+        if deal_id and CRM_MODE != "off":
+            try:
+                fresh_stage, manager_joined = recheck_deal(deal_id, chat_id)
+            except bitrix_crm.BitrixError as exc:
+                logger.error("повторное чтение сделки %s не удалось: %s", deal_id, exc)
+                crm_written = False
+            else:
+                if manager_joined or fresh_stage not in bitrix_crm.BOT_STAGES:
+                    logger.warning(
+                        "менеджер перехватил диалог chat=%s deal=%s stage=%s",
+                        chat_id,
+                        deal_id,
+                        fresh_stage,
+                    )
+                    return None
+                try:
+                    apply_decision(
+                        deal_id,
+                        chat_id,
+                        decision,
+                        current_values,
+                        fresh_stage,
+                        crm_context.get("session_id"),
+                    )
+                except bitrix_crm.BitrixError as exc:
+                    crm_written = False
+                    logger.error("запись в сделку %s не удалась: %s", deal_id, exc)
+
+        # При передаче менеджеру клиент узнаёт об этом только после успешной
+        # записи в CRM: иначе бот пообещал бы то, чего в сделке нет.
+        if handoff and not crm_written:
+            logger.error(
+                "ответ о передаче не отправлен chat=%s deal=%s", chat_id, deal_id or "-"
+            )
+            return None
+
+        if not should_send:
+            logger.info(
+                "модель не отправляет ответ chat=%s action=%s",
+                chat_id,
+                decision.get("action"),
+            )
+            return None
+
+        if deliver:
+            send_bitrix_reply(chat_id, reply)
+        save_conversation_turn(conversation_id, message, reply)
+        return reply
 
 
 class RequestHandler(BaseHTTPRequestHandler):
@@ -469,7 +751,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            reply = make_openai_reply(message, conversation_id=f"local:{session_id}")
+            reply = make_local_reply(message, f"local:{session_id}")
         except Exception as exc:
             logger.error("local chat request failed: %s: %s", type(exc).__name__, exc)
             self.send_json(502, {"error": "openai_request_failed"})
@@ -553,6 +835,9 @@ class RequestHandler(BaseHTTPRequestHandler):
                     exc,
                 )
                 self.send_json(502, {"error": "processing_failed"})
+                return
+            if reply is None:
+                self.send_json(200, {"status": "no_reply"})
                 return
             self.send_json(200, {"status": "simulated", "reply": reply})
             return
