@@ -2,11 +2,19 @@
 # Публичный HTTPS-туннель к локальному обработчику с внешней проверкой и
 # автоматической привязкой адреса к боту Bitrix24.
 #
-# Зачем сторожевая проверка: localhost.run снимает проброс на своей стороне,
-# при этом ssh-клиент остаётся жив, а TCP-соединение — в состоянии ESTAB.
-# Внутренними средствами такой обрыв не виден: Bitrix24 стучится на мёртвый
-# адрес, обработчик молчит, в его журнале пусто. Поэтому адрес проверяется
-# снаружи, и при отказе туннель поднимается заново с новым адресом.
+# Провайдер — pinggy.io по SSH: регистрация и установка не нужны.
+# Прежний localhost.run отклоняет и анонимный вход, и ключи
+# ("Permission denied (publickey)"), ngrok блокирует IP этой машины
+# (ERR_NGROK_9040), serveo.net не отвечает. Проверено 5 сентября 2026 года.
+#
+# Особенность бесплатного туннеля pinggy: он живёт 60 минут. Скрипт сам
+# переподключается заранее и заново привязывает новый адрес к боту.
+#
+# Зачем сторожевая проверка: туннель может перестать работать на стороне
+# провайдера, при этом ssh-клиент остаётся жив, а TCP-соединение — в состоянии
+# ESTAB. Внутренними средствами такой обрыв не виден: Bitrix24 стучится на
+# мёртвый адрес, обработчик молчит, в его журнале пусто. Поэтому адрес
+# проверяется снаружи.
 #
 # Запуск:  ./run_tunnel.sh
 # Только туннель, без записи в Bitrix24:  EAGLES_SKIP_UPDATE=1 ./run_tunnel.sh
@@ -16,6 +24,8 @@ set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PORT="${PORT:-8000}"
 CHECK_INTERVAL="${CHECK_INTERVAL:-30}"
+# 55 минут: бесплатный туннель pinggy закрывается через 60.
+TUNNEL_MAX_AGE="${TUNNEL_MAX_AGE:-3300}"
 LOG_DIR="$ROOT/logs"
 TUNNEL_LOG="$LOG_DIR/tunnel.log"
 mkdir -p "$LOG_DIR"
@@ -43,16 +53,17 @@ fi
 while true; do
     SESSION_LOG="$(mktemp)"
 
-    noproxy ssh -o StrictHostKeyChecking=accept-new \
-                -o ExitOnForwardFailure=yes \
+    noproxy ssh -p 443 \
+                -o StrictHostKeyChecking=accept-new \
                 -o ServerAliveInterval=30 \
                 -o ServerAliveCountMax=3 \
-                -R "80:localhost:$PORT" nokey@localhost.run > "$SESSION_LOG" 2>&1 &
+                -R "0:localhost:$PORT" a.pinggy.io > "$SESSION_LOG" 2>&1 < /dev/null &
     SSH_PID=$!
+    STARTED=$SECONDS
 
     URL=""
     for _ in $(seq 1 30); do
-        URL=$(grep -o 'https://[a-z0-9-]*\.lhr\.life' "$SESSION_LOG" | head -1)
+        URL=$(grep -oE 'https://[a-z0-9.-]+\.(free\.pinggy\.net|pinggy-free\.link)' "$SESSION_LOG" | head -1)
         [ -n "$URL" ] && break
         kill -0 "$SSH_PID" 2>/dev/null || break
         sleep 1
@@ -81,6 +92,10 @@ while true; do
     FAILURES=0
     while kill -0 "$SSH_PID" 2>/dev/null; do
         sleep "$CHECK_INTERVAL"
+        if [ $((SECONDS - STARTED)) -ge "$TUNNEL_MAX_AGE" ]; then
+            say "туннелю почти час — переподключаемся до истечения срока"
+            break
+        fi
         if noproxy curl -s -m 15 -o /dev/null -f "$URL/health"; then
             FAILURES=0
         else

@@ -1,0 +1,171 @@
+{
+  "source": "Тестовый стенд Eagles: вымышленные значения для проверки диалога",
+  "dataset": "mock",
+  "valid_from": "2026-09-01",
+  "currency": "RUB",
+  "policy": "Набор для отладки бота. Значения помечены confirmed, чтобы проверить, как бот ведёт консультацию при полных данных.",
+  "items": [
+    {
+      "name": "BJJ для взрослых",
+      "audience": "взрослые от 18 лет",
+      "price": 4000,
+      "period": "месяц",
+      "visits": 12,
+      "single_visit_price": 700,
+      "status": "confirmed"
+    },
+    {
+      "name": "BJJ для взрослых Premium",
+      "audience": "взрослые от 18 лет",
+      "price": 5500,
+      "period": "месяц",
+      "visits": "безлимит",
+      "status": "confirmed"
+    },
+    {
+      "name": "BJJ для подростков 13–17 лет",
+      "audience": "подростки 13–17 лет",
+      "price": 3800,
+      "period": "месяц",
+      "visits": 12,
+      "status": "confirmed"
+    },
+    {
+      "name": "BJJ для детей 6–12 лет",
+      "audience": "дети 6–12 лет",
+      "price": 3500,
+      "period": "месяц",
+      "visits": 12,
+      "status": "confirmed"
+    },
+    {
+      "name": "Женское BJJ",
+      "audience": "женщины от 18 лет",
+      "price": 4000,
+      "period": "месяц",
+      "visits": 8,
+      "status": "confirmed"
+    },
+    {
+      "name": "Грэпплинг",
+      "audience": "взрослые от 18 лет",
+      "price": 4000,
+      "period": "месяц",
+      "visits": 8,
+      "status": "confirmed"
+    },
+    {
+      "name": "Вольная борьба, взрослые",
+      "audience": "взрослые от 18 лет",
+      "price": 3800,
+      "period": "месяц",
+      "visits": 12,
+      "status": "confirmed"
+    },
+    {
+      "name": "Вольная борьба, дети 6–12 лет",
+      "audience": "дети 6–12 лет",
+      "price": 3200,
+      "period": "месяц",
+      "visits": 12,
+      "status": "confirmed"
+    },
+    {
+      "name": "MMA",
+      "audience": "взрослые от 18 лет",
+      "price": 5000,
+      "period": "месяц",
+      "visits": 12,
+      "status": "confirmed"
+    },
+    {
+      "name": "Бокс",
+      "audience": "взрослые от 18 лет",
+      "price": 4000,
+      "period": "месяц",
+      "visits": 12,
+      "status": "confirmed"
+    },
+    {
+      "name": "Кикбоксинг",
+      "audience": "взрослые от 18 лет",
+      "price": 4000,
+      "period": "месяц",
+      "visits": 8,
+      "status": "confirmed"
+    },
+    {
+      "name": "Муай-тай",
+      "audience": "взрослые от 18 лет",
+      "price": 4200,
+      "period": "месяц",
+      "visits": 8,
+      "status": "confirmed"
+    },
+    {
+      "name": "Ушу-саньда, дети 8–14 лет",
+      "audience": "дети 8–14 лет",
+      "price": 3500,
+      "period": "месяц",
+      "visits": 12,
+      "status": "confirmed"
+    },
+    {
+      "name": "Функциональная тренировка",
+      "audience": "взрослые от 18 лет",
+      "price": 3500,
+      "period": "месяц",
+      "visits": 12,
+      "status": "confirmed"
+    },
+    {
+      "name": "Персональная тренировка",
+      "audience": "любой возраст",
+      "price": 2500,
+      "period": "занятие 60 минут",
+      "package": {"visits": 10, "price": 22000},
+      "status": "confirmed"
+    },
+    {
+      "name": "Тренажёрный зал",
+      "audience": "от 16 лет",
+      "price": 3000,
+      "period": "месяц",
+      "visits": "безлимит",
+      "single_visit_price": 500,
+      "status": "confirmed"
+    },
+    {
+      "name": "Бассейн и восстановительная зона",
+      "audience": "от 16 лет",
+      "price": 6000,
+      "period": "месяц",
+      "visits": 12,
+      "single_visit_price": 700,
+      "note": "Включает бассейн, финскую сауну, ледяную купель и фитобочку.",
+      "status": "confirmed"
+    },
+    {
+      "name": "Проживание в спортивном хостеле",
+      "audience": "спортсмены и сопровождающие",
+      "price": 1200,
+      "period": "сутки, койко-место",
+      "status": "confirmed"
+    },
+    {
+      "name": "Питание в кафе SELF",
+      "audience": "спортсмены на сборах",
+      "price": 1000,
+      "period": "сутки, трёхразовое",
+      "status": "confirmed"
+    },
+    {
+      "name": "Тренировочные сборы под ключ",
+      "audience": "команды от 10 человек",
+      "price": 2900,
+      "period": "сутки на человека",
+      "note": "Включает проживание, трёхразовое питание, два тренировочных зала и восстановительную зону. Точный расчёт делает менеджер.",
+      "status": "confirmed"
+    }
+  ]
+}

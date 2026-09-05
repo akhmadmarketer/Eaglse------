@@ -127,7 +127,17 @@ conversation_state_lock = threading.Lock()
 # `knowledge/README.md` и `knowledge/review-needed.md` — внутренние заметки о
 # неподтверждённых и противоречивых данных, модель не должна их пересказывать
 # клиенту.
-KNOWLEDGE_DIRS = ("static", "dynamic")
+#
+# `knowledge/mock` — вымышленные цены, расписание и условия для отладки. В
+# реальном снимке сайта нет ни одного факта со статусом confirmed, поэтому без
+# подмены бот не может вести предметный разговор. Включать только на стенде:
+# клиенту эти значения выдавать нельзя.
+KNOWLEDGE_MOCK = os.getenv("EAGLES_KNOWLEDGE_MOCK", "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+}
+KNOWLEDGE_DIRS = ("static", "mock") if KNOWLEDGE_MOCK else ("static", "dynamic")
 
 
 def load_knowledge_base() -> str:
@@ -151,6 +161,13 @@ def load_knowledge_base() -> str:
 
 
 KNOWLEDGE_BASE = load_knowledge_base()
+
+if KNOWLEDGE_MOCK:
+    logger.warning(
+        "ВНИМАНИЕ: включены вымышленные данные knowledge/mock. Цены, расписание "
+        "и условия в ответах бота недостоверны. Не оставляйте этот режим "
+        "включённым на канале, где пишут настоящие клиенты."
+    )
 
 SALES_INSTRUCTIONS = sales_decision.build_instructions(KNOWLEDGE_BASE)
 
@@ -243,7 +260,7 @@ def make_decision(
     analysis = decision.get("crm_analysis", {})
     logger.info(
         "openai decision conversation=%s after=%.1fs action=%s state=%s barrier=%s "
-        "next=%s stage=%s handoff=%s facts=%d conflicts=%d",
+        "next=%s stage=%s handoff=%s/%s safety=%s facts=%d conflicts=%d",
         conversation_id,
         time.monotonic() - started,
         decision.get("action"),
@@ -252,6 +269,8 @@ def make_decision(
         analysis.get("next_action"),
         decision.get("stage_transition", {}).get("target"),
         bool(decision.get("handoff", {}).get("required")),
+        decision.get("handoff", {}).get("reason"),
+        decision.get("safety", {}).get("category"),
         len(decision.get("extracted_facts") or []),
         len(decision.get("conflicts") or []),
     )
@@ -301,8 +320,14 @@ def read_contact_context(contact_id: str) -> Dict[str, Any]:
 
 def read_crm_context(
     chat_id: str,
-) -> Tuple[Optional[str], Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
-    """Сделка чата: (deal_id, CRM_CONTEXT, CONTACT_CONTEXT, текущие значения)."""
+) -> Tuple[Optional[str], Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+    """Сделка чата: (deal_id, CRM_CONTEXT, CONTACT_CONTEXT, значения, связи чата).
+
+    Якорь — контакт, а не сделка. Связь чата с CRM в Bitrix24 одноразовая: её
+    нельзя переписать через REST, она указывает на первую созданную сделку и
+    остаётся указывать на неё даже после удаления. Поэтому сделку ищем по
+    контакту среди открытых, а связь чата используем только как запасной путь.
+    """
     context: Dict[str, Any] = {
         "deal_id": None,
         "stage": "not_linked",
@@ -316,40 +341,49 @@ def read_crm_context(
 
     if CRM_MODE == "off" or not crm.configured:
         context["stage"] = "crm_disabled"
-        return None, context, contact, {}
+        return None, context, contact, {}, {}
 
     info = crm.dialog_info(chat_id)
     if not info["read"]:
         # Актуальное состояние диалога неизвестно: вмешиваться нельзя.
         context["stage"] = "unreadable"
         context["bot_may_reply"] = False
-        return None, context, contact, {}
+        return None, context, contact, {}, info
 
     context["manager_has_joined"] = any(
         operator != B24_BOT_ID for operator in info["operators"]
     )
     context["session_id"] = info["session_id"]
-    deal_id = info["deal_id"] or crm.deal_id_by_chat_field(chat_id)
+
+    contact_id = info["contact_id"]
+    if contact_id:
+        contact.update(read_contact_context(contact_id))
+        contact["is_existing_client"] = True
+
+    deal_id = None
+    if contact_id:
+        deal_id = crm.find_active_deal(contact_id)
+    if not deal_id:
+        deal_id = crm.deal_id_by_chat_field(chat_id)
+
     deal = None
-    while deal_id and deal is None:
+    if deal_id:
         try:
             deal = crm.read_deal(deal_id)
         except bitrix_crm.BitrixNotFound:
-            # Чат помнит удалённую сделку: пробуем свою связь, иначе работаем
-            # без сделки. Молчать из-за этого нельзя.
-            logger.warning("чат %s ссылается на удалённую сделку %s", chat_id, deal_id)
-            fallback = crm.deal_id_by_chat_field(chat_id)
-            deal_id = fallback if fallback and fallback != deal_id else None
+            logger.warning("сделка %s чата %s больше не существует", deal_id, chat_id)
+            deal_id = None
         except bitrix_crm.BitrixError as exc:
             logger.error("сделка %s не прочитана: %s", deal_id, exc)
             context["stage"] = "unreadable"
             context["bot_may_reply"] = False
-            return None, context, contact, {}
+            return None, context, contact, {}, info
 
-    if deal is None or not deal_id:
-        context["stage"] = "not_linked"
+    if deal is None:
+        # Открытой сделки нет. Заводить её сейчас нельзя: сначала нужно понять,
+        # продажное ли это обращение. Решение принимается после ответа модели.
         context["bot_may_reply"] = not context["manager_has_joined"]
-        return None, context, contact, {}
+        return None, context, contact, {}, info
 
     values = crm.to_logical(deal)
     stage_id = str(deal.get("STAGE_ID") or "")
@@ -367,12 +401,53 @@ def read_crm_context(
             if value not in (None, "", []) and name not in TECHNICAL_FIELDS
         },
     )
+    return deal_id, context, contact, values, info
 
-    contact_id = info["contact_id"] or str(deal.get("CONTACT_ID") or "")
-    if contact_id and contact_id != "0":
-        contact.update(read_contact_context(contact_id))
-        contact["is_existing_client"] = True
-    return deal_id, context, contact, values
+
+# Обращения, ради которых заводится продажная сделка. Жалоба, сервисный вопрос
+# действующего клиента, деловое предложение и нецелевое обращение продажами не
+# являются и воронку засорять не должны.
+SALES_REQUEST_TYPES = ("new_sale", "upsell")
+
+
+def create_deal_if_sales_request(
+    chat_id: str, decision: Dict[str, Any], info: Dict[str, Any]
+) -> Tuple[Optional[str], Dict[str, Any]]:
+    """Завести сделку, если открытой нет, а обращение оказалось продажным."""
+    request_type = str(decision.get("crm_analysis", {}).get("request_type") or "")
+    if request_type not in SALES_REQUEST_TYPES:
+        logger.info(
+            "сделка не создаётся chat=%s request_type=%s — обращение не продажное",
+            chat_id,
+            request_type or "-",
+        )
+        return None, {}
+
+    if CRM_MODE != "apply":
+        logger.info(
+            "crm plan chat=%s mode=%s создал бы сделку request_type=%s contact=%s",
+            chat_id,
+            CRM_MODE,
+            request_type,
+            info.get("contact_id") or "-",
+        )
+        return None, {}
+
+    try:
+        deal_id = crm.create_deal(chat_id, info)
+        deal = crm.read_deal(deal_id)
+    except bitrix_crm.BitrixError as exc:
+        logger.error("сделка для чата %s не создана: %s", chat_id, exc)
+        return None, {}
+
+    logger.info(
+        "создана сделка %s chat=%s contact=%s request_type=%s",
+        deal_id,
+        chat_id,
+        info.get("contact_id") or "-",
+        request_type,
+    )
+    return deal_id, crm.to_logical(deal)
 
 
 def recheck_deal(deal_id: str, chat_id: str) -> Tuple[str, bool]:
@@ -610,7 +685,9 @@ def process_bitrix_message(
     conversation_id = f"bitrix:{chat_id}"
 
     with get_conversation_lock(conversation_id):
-        deal_id, crm_context, contact_context, current_values = read_crm_context(chat_id)
+        deal_id, crm_context, contact_context, current_values, chat_info = read_crm_context(
+            chat_id
+        )
         if not crm_context["bot_may_reply"]:
             logger.info(
                 "бот молчит chat=%s deal=%s stage=%s manager=%s",
@@ -632,6 +709,13 @@ def process_bitrix_message(
         reply = str(decision.get("reply", {}).get("text") or "").strip()
         should_send = bool(decision.get("reply", {}).get("should_send")) and bool(reply)
         handoff = sales_decision.needs_handoff(decision)
+
+        # Открытой сделки не было: заводим её только теперь, когда модель
+        # определила, что обращение продажное.
+        if deal_id is None and CRM_MODE != "off" and chat_info.get("read"):
+            deal_id, current_values = create_deal_if_sales_request(
+                chat_id, decision, chat_info
+            )
 
         crm_written = True
         if deal_id and CRM_MODE != "off":
@@ -878,11 +962,12 @@ class RequestHandler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     server = ThreadingHTTPServer(("127.0.0.1", PORT), RequestHandler)
     logger.info(
-        "eagles bot started port=%s model=%s crm_mode=%s knowledge_chars=%d "
-        "log_message_text=%s",
+        "eagles bot started port=%s model=%s crm_mode=%s knowledge=%s "
+        "knowledge_chars=%d log_message_text=%s",
         PORT,
         OPENAI_MODEL,
         CRM_MODE,
+        "mock" if KNOWLEDGE_MOCK else "real",
         len(KNOWLEDGE_BASE),
         LOG_MESSAGE_TEXT,
     )

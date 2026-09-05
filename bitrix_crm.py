@@ -258,6 +258,8 @@ class BitrixClient:
             "deal_id": None,
             "contact_id": None,
             "session_id": None,
+            "source_id": "",
+            "title": "",
             "operators": [],
         }
         try:
@@ -280,20 +282,50 @@ class BitrixClient:
         session_parts = str(dialog.get("entity_data_1") or "").split("|")
         session_id = session_parts[5] if len(session_parts) > 5 else "0"
 
+        # entity_id вида "fbinstagramdirect|1|2161811058105214|33": коннектор и
+        # номер линии дают источник сделки в том же виде, что ставит Bitrix24.
+        entity_parts = str(dialog.get("entity_id") or "").split("|")
+        source_id = ""
+        if len(entity_parts) > 1 and entity_parts[0] and entity_parts[1]:
+            source_id = f"{entity_parts[1]}|{entity_parts[0].upper()}"
+
         return {
             "read": True,
             "deal_id": entity("DEAL"),
             "contact_id": entity("CONTACT"),
             "session_id": session_id if session_id.isdigit() and session_id != "0" else None,
+            "source_id": source_id,
+            "title": str(dialog.get("name") or "").strip(),
             "operators": [str(item) for item in dialog.get("manager_list") or []],
         }
 
-    def find_deal_id(self, chat_id: str) -> Optional[str]:
-        """ID сделки чата: сначала по связи чата, потом по техническому полю."""
-        deal_id = self.dialog_info(chat_id)["deal_id"]
-        if deal_id:
-            return deal_id
-        return self.deal_id_by_chat_field(chat_id)
+    def find_active_deal(self, contact_id: str) -> Optional[str]:
+        """Открытая сделка контакта в основной воронке.
+
+        Контакт — устойчивый якорь: он есть в связи чата, не закрывается и не
+        удаляется в обычной работе. Сделка же живёт от обращения до закрытия,
+        поэтому одна сделка на чат навсегда была бы неверной моделью: вторая
+        покупка того же клиента должна стать отдельной сделкой.
+        """
+        try:
+            found = self.call(
+                "crm.deal.list",
+                {
+                    "filter": {
+                        "CONTACT_ID": int(contact_id),
+                        "CATEGORY_ID": 0,
+                        "CLOSED": "N",
+                    },
+                    "select": ["ID"],
+                    "order": {"ID": "DESC"},
+                },
+            )
+        except (BitrixError, ValueError) as exc:
+            logger.warning("поиск сделки контакта %s не удался: %s", contact_id, exc)
+            return None
+        if isinstance(found, list) and found:
+            return str(found[0].get("ID"))
+        return None
 
     def deal_id_by_chat_field(self, chat_id: str) -> Optional[str]:
         try:
@@ -319,6 +351,30 @@ class BitrixClient:
         if not isinstance(deal, dict):
             raise BitrixError("crm.deal.get: неожиданный ответ")
         return deal
+
+    def create_deal(self, chat_id: str, info: Dict[str, Any]) -> str:
+        """Создать сделку для чата, у которого её нет.
+
+        Обычно сделку заводит сам Bitrix24 при первом обращении. Этот путь нужен,
+        когда связи не осталось: например, прежнюю сделку удалили, а новую
+        Bitrix24 не создаёт, потому что обращение для него не первое.
+        """
+        fields: Dict[str, Any] = {
+            "TITLE": info.get("title") or f"Открытая линия — чат {chat_id}",
+            "CATEGORY_ID": 0,
+            "STAGE_ID": STAGE_IDS["new"],
+            "OPENED": "Y",
+            DEAL_FIELD_MAP["openline_chat_id"]: str(chat_id),
+        }
+        if info.get("contact_id"):
+            fields["CONTACT_ID"] = int(info["contact_id"])
+        if info.get("source_id"):
+            fields["SOURCE_ID"] = info["source_id"]
+        if info.get("session_id"):
+            fields[DEAL_FIELD_MAP["openline_session_id"]] = str(info["session_id"])
+
+        deal_id = self.call("crm.deal.add", {"fields": fields, "params": {"REGISTER_SONET_EVENT": "N"}})
+        return str(deal_id)
 
     def update_deal(self, deal_id: str, fields: Dict[str, Any]) -> None:
         if not fields:

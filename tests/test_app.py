@@ -43,6 +43,7 @@ class FakeBitrix(bitrix_crm.BitrixClient):
         self.session_id = session_id
         self.deleted = deleted
         self.updates = []
+        self.created = []
 
     def call(self, method, payload=None):
         if method == "imopenlines.dialog.get":
@@ -52,7 +53,15 @@ class FakeBitrix(bitrix_crm.BitrixClient):
                 "manager_list": self.operators,
             }
         if method == "crm.deal.list":
-            return []
+            # Поиск открытой сделки контакта; удалённая сделка не находится.
+            if self.deleted or not self.deal_id:
+                return []
+            return [{"ID": str(self.deal_id)}]
+        if method == "crm.deal.add":
+            self.created.append(payload)
+            self.deleted = False
+            self.deal_id = 77
+            return 77
         if method == "crm.deal.get":
             if self.deleted:
                 raise bitrix_crm.BitrixNotFound("crm.deal.get: не найден")
@@ -183,14 +192,77 @@ class BitrixPipelineTest(unittest.TestCase):
             fields[bitrix_crm.DEAL_FIELD_MAP["openline_session_id"]], "17"
         )
 
-    def test_deleted_deal_does_not_silence_the_bot(self):
-        """Чат может помнить удалённую сделку: бот отвечает, но в CRM не пишет."""
+    def test_missing_deal_is_replaced_by_a_new_one(self):
+        """Открытой сделки у контакта нет — заводим новую и работаем с ней."""
         crm = FakeBitrix(stage="NEW", deleted=True)
-        reply, fake = self.run_message(crm)
+        reply, _ = self.run_message(crm)
 
         self.assertEqual(reply, "Ответ")
+        self.assertEqual(len(crm.created), 1)
+        created = crm.created[0]["fields"]
+        self.assertEqual(created["STAGE_ID"], bitrix_crm.STAGE_IDS["new"])
+        self.assertEqual(created["CONTACT_ID"], 9)
+        self.assertEqual(
+            created[bitrix_crm.DEAL_FIELD_MAP["openline_chat_id"]], "165"
+        )
+        self.assertEqual(len(crm.updates), 1)
+
+    def test_non_sales_request_does_not_create_a_deal(self):
+        """Жалоба и сервисный вопрос не должны заводить продажную сделку."""
+        for request_type in (
+            "complaint_or_problem",
+            "current_client_service",
+            "business_or_partnership",
+            "non_target",
+            "unknown",
+        ):
+            with self.subTest(request_type=request_type):
+                crm = FakeBitrix(stage="NEW", deleted=True)
+                reply, _ = self.run_message(
+                    crm,
+                    decisions=[decision(crm_analysis={"request_type": request_type})],
+                )
+                self.assertEqual(reply, "Ответ")
+                self.assertEqual(crm.created, [])
+                self.assertEqual(crm.updates, [])
+
+    def test_upsell_creates_a_deal(self):
+        crm = FakeBitrix(stage="NEW", deleted=True)
+        self.run_message(crm, decisions=[decision(crm_analysis={"request_type": "upsell"})])
+        self.assertEqual(len(crm.created), 1)
+
+    def test_deal_is_found_through_the_contact(self):
+        """Сделку ищем по контакту, а не по одноразовой связи чата."""
+        crm = FakeBitrix(stage="UC_JMBAX5")
+        calls = []
+        original = crm.call
+
+        def spy(method, payload=None):
+            calls.append((method, payload))
+            return original(method, payload)
+
+        crm.call = spy
+        self.run_message(crm)
+
+        deal_lists = [p for m, p in calls if m == "crm.deal.list"]
+        self.assertTrue(deal_lists)
+        self.assertEqual(deal_lists[0]["filter"]["CONTACT_ID"], 9)
+        self.assertEqual(deal_lists[0]["filter"]["CLOSED"], "N")
+
+    def test_plan_mode_reports_the_deal_it_would_create(self):
+        """В режиме plan сделка не создаётся, но намерение видно в журнале."""
+        crm = FakeBitrix(stage="NEW", deleted=True)
+        with self.assertLogs("eagles", level="INFO") as logs:
+            reply, fake = self.run_message(crm, mode="plan")
+
+        self.assertEqual(reply, "Ответ")
+        self.assertEqual(crm.created, [])
         self.assertEqual(crm.updates, [])
         self.assertEqual(len(fake.responses.calls), 1)
+        self.assertTrue(
+            any("создал бы сделку" in line for line in logs.output),
+            logs.output,
+        )
 
     def test_bot_is_silent_on_manager_stage(self):
         crm = FakeBitrix(stage="UC_4OCEJT")
@@ -256,6 +328,29 @@ class KnowledgeBaseTest(unittest.TestCase):
     def test_facts_are_in_prompt(self):
         for facts_file in ("knowledge/static/services.md", "knowledge/dynamic/prices.json"):
             self.assertIn(facts_file, app.KNOWLEDGE_BASE)
+
+    def test_mock_data_is_off_by_default(self):
+        """Вымышленные цены не должны попадать в промпт без явного включения."""
+        self.assertFalse(app.KNOWLEDGE_MOCK)
+        self.assertNotIn("knowledge/mock/", app.KNOWLEDGE_BASE)
+        self.assertIn("knowledge/dynamic/", app.KNOWLEDGE_BASE)
+
+    def test_mock_dataset_is_complete_and_confirmed(self):
+        """Мокапы должны закрывать то, чего нет в реальном снимке сайта."""
+        import json
+
+        mock_dir = ROOT / "knowledge" / "mock"
+        names = {path.name for path in mock_dir.glob("*.json")}
+        self.assertEqual(
+            names, {"prices.json", "schedule.json", "trainers.json", "rules.json"}
+        )
+        for path in sorted(mock_dir.glob("*.json")):
+            data = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(data.get("dataset"), "mock", path.name)
+            records = data.get("items") or data.get("groups") or data.get("trainers")
+            self.assertTrue(records, path.name)
+            for record in records:
+                self.assertEqual(record.get("status"), "confirmed", path.name)
 
     def test_instructions_contain_stage_and_crm_rules(self):
         self.assertIn("СТАДИИ", app.SALES_INSTRUCTIONS)
